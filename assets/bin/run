@@ -13,7 +13,6 @@ start() {
 
   openshift-tuned \
     -v=1 \
-    -watch-file /var/lib/tuned/profiles-data/ \
     ${OCP_NODE_NAME}
 }
 

@@ -25,7 +25,6 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog"
 
-	"github.com/fsnotify/fsnotify"
 	"gopkg.in/yaml.v2"
 
 	tunedv1 "github.com/openshift/cluster-node-tuning-operator/pkg/apis/tuned/v1"
@@ -64,7 +63,6 @@ const (
 	openshiftTunedRunDir   = "/run/" + programName
 	openshiftTunedPidFile  = openshiftTunedRunDir + "/" + programName + ".pid"
 	openshiftTunedSocket   = "/var/lib/tuned/openshift-tuned.sock"
-	supportCM              = true // remove when dropping support for tuned-profiles ConfigMap
 )
 
 // Global variables
@@ -72,7 +70,6 @@ var (
 	done               = make(chan bool, 1)
 	tunedExit          = make(chan bool, 1)
 	terminationSignals = []os.Signal{syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT}
-	fileWatch          arrayFlags
 	version            string // programName version
 	cmd                *exec.Cmd
 	// Flags
@@ -110,7 +107,6 @@ func parseCmdOpts() {
 		flag.PrintDefaults()
 	}
 
-	flag.Var(&fileWatch, "watch-file", "Files/directories to watch for changes.")
 	flag.Parse()
 }
 
@@ -443,17 +439,6 @@ func timedTunedReloader(tuned *tunedState) (err error) {
 		reload = true
 	}
 
-	// Check tuned profiles file changes
-	if supportCM {
-		// Check tuned profiles file changes
-		if tuned.change.cfg {
-			tuned.change.cfg = false
-			if err = profilesExtractCM(); err != nil {
-				return err
-			}
-			reload = true
-		}
-	}
 	if reload {
 		err = tunedReload()
 	}
@@ -590,13 +575,6 @@ func changeWatcher() (err error) {
 		tunedFS   fields.Selector = fields.SelectorFromSet(fields.Set{"metadata.name": tunedv1.TunedRenderedResourceName})
 	)
 
-	if supportCM {
-		err = profilesExtractCM()
-		if err != nil {
-			return err
-		}
-	}
-
 	kubeConfig, err := getConfig()
 	if err != nil {
 		return err
@@ -626,21 +604,6 @@ func changeWatcher() (err error) {
 	// this also rate-limits reloads to a maximum of profileExtractInterval reloads/s
 	tickerReload := time.NewTicker(time.Second * time.Duration(profileExtractInterval))
 	defer tickerReload.Stop()
-
-	// Watch for filesystem changes on tuned profiles and recommend.conf file(s)
-	wFs, err := fsnotify.NewWatcher()
-	if err != nil {
-		return fmt.Errorf("failed to create filesystem watcher: %v", err)
-	}
-	defer wFs.Close()
-
-	// Register fsnotify watchers
-	for _, element := range fileWatch {
-		err = wFs.Add(element)
-		if err != nil {
-			return fmt.Errorf("failed to start watching %q: %v", element, err)
-		}
-	}
 
 	l, err := newUnixListener(openshiftTunedSocket)
 	if err != nil {
@@ -692,17 +655,6 @@ func changeWatcher() (err error) {
 		case <-tunedExit:
 			cmd = nil // cmd.Start() cannot be used more than once
 			return fmt.Errorf("tuned process exitted")
-
-		case fsEvent := <-wFs.Events:
-			klog.V(2).Infof("fsEvent")
-			// Ignore Write and Create events, wait for the removal of the old ConfigMap to trigger reload
-			if fsEvent.Op&fsnotify.Remove == fsnotify.Remove {
-				klog.V(1).Infof("remove event on: %s", fsEvent.Name)
-				tuned.change.cfg = true
-			}
-
-		case err := <-wFs.Errors:
-			return fmt.Errorf("error watching filesystem: %v", err)
 
 		case <-tickerReload.C:
 			klog.V(2).Infof("tickerReload.C")

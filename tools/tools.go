@@ -20,6 +20,5 @@ limitations under the License.
 package tools
 
 import (
-	_ "k8s.io/client-go/pkg/api/v1"
 	_ "k8s.io/code-generator"
 )
